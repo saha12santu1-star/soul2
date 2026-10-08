@@ -1,0 +1,243 @@
+name: Build Protected Soul2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager "build-tools;35.0.0" "platforms;android-35"
+
+      - name: Install required tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl zip unzip
+
+      - name: Fetch Soul2 RC8
+        run: |
+          git clone --depth 1 --branch v2.0.0-rc.8 \
+            https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
+
+      - name: Add safety blocker
+        run: |
+          mkdir -p soul2/app/smali_classes3/com/mycompany/app/security
+
+          cat > soul2/app/smali_classes3/com/mycompany/app/security/SafetyBlocker.smali <<'EOF'
+.class public final Lcom/mycompany/app/security/SafetyBlocker;
+.super Ljava/lang/Object;
+.source "SafetyBlocker.java"
+
+.method public static isBlocked(Landroid/content/Context;Ljava/lang/String;)Z
+    .locals 10
+
+    :try_start_0
+    invoke-static {p1}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+    move-result-object v0
+
+    invoke-virtual {v0}, Landroid/net/Uri;->getScheme()Ljava/lang/String;
+    move-result-object v1
+    if-eqz v1, :return_false
+
+    const-string v2, "https"
+    invoke-virtual {v2, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+    move-result v2
+    if-nez v2, :scheme_ok
+
+    const-string v2, "http"
+    invoke-virtual {v2, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+    move-result v2
+    if-eqz v2, :return_false
+
+    :scheme_ok
+    invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+    move-result-object v1
+    if-eqz v1, :return_false
+
+    invoke-virtual {v1}, Ljava/lang/String;->isEmpty()Z
+    move-result v2
+    if-eqz v2, :host_ok
+    goto :return_false
+
+    :host_ok
+    const-string v2, "https://family.cloudflare-dns.com/dns-query?name="
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {v3, v2}, Ljava/lang/StringBuilder;-><init>()V
+
+    const-string v2, "UTF-8"
+    invoke-static {v1, v2}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v1
+    invoke-virtual {v3, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v1, "&type=A"
+    invoke-virtual {v3, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {v3}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+
+    const-string v2, ""
+    const/16 v3, 0x1388
+    const/16 v4, 0x1388
+    const/4 v5, 0x0
+    const-string v6, ""
+    const/4 v7, 0x0
+    move-object v0, p0
+    invoke-static/range {v0 .. v7}, Lcom/mycompany/app/main/MainUtil;->T3(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;IIZLjava/lang/String;Z)Ljava/net/HttpURLConnection;
+    move-result-object v0
+    if-eqz v0, :return_false
+
+    const-string v1, "Accept"
+    const-string v2, "application/dns-json"
+    invoke-virtual {v0, v1, v2}, Ljava/net/URLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+
+    invoke-virtual {v0}, Ljava/net/HttpURLConnection;->getResponseCode()I
+    move-result v1
+    const/16 v2, 0xc8
+    if-ne v1, v2, :disconnect_false
+
+    invoke-virtual {v0}, Ljava/net/HttpURLConnection;->getInputStream()Ljava/io/InputStream;
+    move-result-object v1
+    new-instance v2, Ljava/io/BufferedReader;
+    new-instance v3, Ljava/io/InputStreamReader;
+    const-string v4, "UTF-8"
+    invoke-direct {v3, v1, v4}, Ljava/io/InputStreamReader;-><init>(Ljava/io/InputStream;Ljava/lang/String;)V
+    invoke-direct {v2, v3}, Ljava/io/BufferedReader;-><init>(Ljava/io/Reader;)V
+
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {v3}, Ljava/lang/StringBuilder;-><init>()V
+
+    :read_loop
+    invoke-virtual {v2}, Ljava/io/BufferedReader;->readLine()Ljava/lang/String;
+    move-result-object v4
+    if-eqz v4, :read_done
+    invoke-virtual {v3, v4}, Ljava/lang/String;->length()I
+    move-result v5
+    const/16 v6, 0x10000
+    if-ge v5, v6, :read_done
+    invoke-virtual {v3, v4}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    goto :read_loop
+
+    :read_done
+    invoke-virtual {v2}, Ljava/io/BufferedReader;->close()V
+    invoke-virtual {v0}, Ljava/net/HttpURLConnection;->disconnect()V
+
+    invoke-virtual {v3}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+
+    const-string v4, "\"data\":\"0.0.0.0\""
+    invoke-virtual {v3, v4}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v4
+    if-eqz v4, :check_ipv6
+    const/4 v0, 0x1
+    return v0
+
+    :check_ipv6
+    const-string v4, "\"data\":\"::\""
+    invoke-virtual {v3, v4}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v4
+    if-eqz v4, :return_false
+    const/4 v0, 0x1
+    return v0
+
+    :disconnect_false
+    invoke-virtual {v0}, Ljava/net/HttpURLConnection;->disconnect()V
+
+    :return_false
+    const/4 v0, 0x0
+    return v0
+    :try_end_0
+    .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_all
+
+    :catch_all
+    const/4 v0, 0x0
+    return v0
+.end method
+
+.method public static blockedResponse()Landroid/webkit/WebResourceResponse;
+    .locals 4
+
+    const-string v0, "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Site blocked</title><style>body{font-family:sans-serif;text-align:center;padding:48px}h1{font-size:24px}p{line-height:1.5}</style></head><body><h1>Site blocked</h1><p>This website was blocked by Soul2's safety filter.</p></body></html>"
+
+    :try_start_0
+    const-string v1, "UTF-8"
+    invoke-virtual {v0, v1}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v1
+    new-instance v2, Ljava/io/ByteArrayInputStream;
+    invoke-direct {v2, v1}, Ljava/io/ByteArrayInputStream;-><init>([B)V
+
+    new-instance v1, Landroid/webkit/WebResourceResponse;
+    const-string v3, "text/html"
+    const-string p0, "UTF-8"
+    invoke-direct {v1, v3, p0, v2}, Landroid/webkit/WebResourceResponse;-><init>(Ljava/lang/String;Ljava/lang/String;Ljava/io/InputStream;)V
+    return-object v1
+    :try_end_0
+    .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_0
+
+    :catch_0
+    const/4 v0, 0x0
+    return-object v0
+.end method
+EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("soul2/app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali")
+          s = p.read_text()
+
+          marker = """.method public final shouldInterceptRequest(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Landroid/webkit/WebResourceResponse;"""
+          start = s.index(marker)
+          end = s.index(".end method", start)
+          method = s[start:end]
+
+          needle = """    invoke-virtual {v1}, Landroid/net/Uri;->toString()Ljava/lang/String;\n\n    .line 27\n    .line 28\n    .line 29\n    move-result-object v7\n"""
+          if needle not in method:
+              raise SystemExit("Expected RC8 WebView interception pattern was not found.")
+
+          patch = """    invoke-virtual {v1}, Landroid/net/Uri;->toString()Ljava/lang/String;\n\n    .line 27\n    .line 28\n    .line 29\n    move-result-object v7\n\n    invoke-interface/range {p2 .. p2}, Landroid/webkit/WebResourceRequest;->isForMainFrame()Z\n    move-result v1\n    if-eqz v1, :soul2_safety_continue\n\n    iget-object v1, v9, Lcom/mycompany/app/web/WebViewActivity;->i1:Landroid/content/Context;\n    invoke-static {v1, v7}, Lcom/mycompany/app/security/SafetyBlocker;->isBlocked(Landroid/content/Context;Ljava/lang/String;)Z\n    move-result v1\n    if-eqz v1, :soul2_safety_continue\n\n    invoke-static {}, Lcom/mycompany/app/security/SafetyBlocker;->blockedResponse()Landroid/webkit/WebResourceResponse;\n    move-result-object v1\n    return-object v1\n\n    :soul2_safety_continue\n"""
+          method = method.replace(needle, patch, 1)
+          s = s[:start] + method + s[end:]
+          p.write_text(s)
+          PY
+
+      - name: Build protected APK
+        working-directory: soul2
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh
+
+      - name: Find APK
+        id: apk
+        working-directory: soul2
+        run: |
+          apk=$(find dist -maxdepth 1 -type f -name '*.apk' \
+            ! -name '*-unsigned.apk' \
+            ! -name '*-aligned.apk' | head -n 1)
+
+          if [ -z "$apk" ]; then
+            echo "No signed APK found"
+            ls -la dist/
+            exit 1
+          fi
+
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload protected APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: soul2-protected
+          path: soul2/${{ steps.apk.outputs.path }}
+          if-no-files-found: error

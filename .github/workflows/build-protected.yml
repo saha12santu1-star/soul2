@@ -37,123 +37,109 @@ jobs:
         working-directory: soul2
         run: |
           test -f 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
-          grep -q 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z' 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
-          grep -q 'shouldInterceptRequest(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Landroid/webkit/WebResourceResponse;' 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
-          echo "Verified RC8 WebViewClient source."
+          grep -q 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z' \
+            'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          grep -q 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Z' \
+            'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          echo "RC8 source verified."
 
-      - name: Patch safety test blocker
+      - name: Patch navigation blocker
         working-directory: soul2
         run: |
-          mkdir -p app/smali_classes3/com/soul2/safety
-
-          cat > app/smali_classes3/com/soul2/safety/SafetyBlocker.smali <<'EOF'
-          .class public final Lcom/soul2/safety/SafetyBlocker;
-          .super Ljava/lang/Object;
-
-          .method public static isBlocked(Ljava/lang/String;)Z
-              .locals 3
-              if-eqz p0, :not_blocked
-              :try_start
-              invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
-              move-result-object v0
-              invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
-              move-result-object v0
-              if-eqz v0, :not_blocked
-              const-string v1, "example.com"
-              invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
-              move-result v2
-              if-nez v2, :blocked
-              const-string v1, ".example.com"
-              invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
-              move-result v2
-              if-eqz v2, :not_blocked
-              :blocked
-              const/4 v0, 0x1
-              return v0
-              :not_blocked
-              const/4 v0, 0x0
-              return v0
-              :try_end
-              .catch Ljava/lang/Exception; {:try_start .. :try_end} :catch
-              :catch
-              const/4 v0, 0x0
-              return v0
-          .end method
-
-          .method public static blockedResponse()Landroid/webkit/WebResourceResponse;
-              .locals 3
-              :try_start
-              const-string v0, "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Site blocked</title></head><body><h1>Site blocked</h1><p>This site was blocked by the Soul2 safety test.</p></body></html>"
-              const-string v1, "UTF-8"
-              invoke-virtual {v0, v1}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
-              move-result-object v0
-              new-instance v1, Ljava/io/ByteArrayInputStream;
-              invoke-direct {v1, v0}, Ljava/io/ByteArrayInputStream;-><init>([B)V
-              new-instance v0, Landroid/webkit/WebResourceResponse;
-              const-string v2, "text/html"
-              const-string p0, "UTF-8"
-              invoke-direct {v0, v2, p0, v1}, Landroid/webkit/WebResourceResponse;-><init>(Ljava/lang/String;Ljava/lang/String;Ljava/io/InputStream;)V
-              return-object v0
-              :try_end
-              .catch Ljava/lang/Exception; {:try_start .. :try_end} :catch
-              :catch
-              const/4 v0, 0x0
-              return-object v0
-          .end method
-          EOF
-
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          p = Path('app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali')
-          s = p.read_text()
-          helper = 'Lcom/soul2/safety/SafetyBlocker;'
-          if helper in s:
-              raise SystemExit('Safety patch already present.')
+          path = Path("app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali")
+          text = path.read_text()
 
-          sig = 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z'
-          m = re.search(r'(?ms)^\.method[^\n]*' + re.escape(sig) + r'\n.*?^\.end method$', s)
+          string_sig = "shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z"
+          request_sig = "shouldOverrideUrlLoading(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Z"
+
+          def find_method(source, sig):
+              return re.search(
+                  r"(?ms)^\.method[^\n]*" + re.escape(sig) + r"\n.*?^\.end method$",
+                  source
+              )
+
+          m = find_method(text, string_sig)
           if not m:
-              raise SystemExit('String navigation method not found.')
+              raise SystemExit("String navigation method not found.")
           method = m.group(0)
-          inject = """    .locals 4
 
-              invoke-static {p2}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-              move-result v3
+          if "SOUL2_SAFETY_TEST" not in method:
+              marker = "    .locals 4\n"
+              if marker not in method:
+                  raise SystemExit("Unexpected register layout in String navigation method.")
+
+              inject = """    # SOUL2_SAFETY_TEST
+              invoke-static {p2}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+              move-result-object v3
+              invoke-virtual {v3}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+              move-result-object v3
               if-eqz v3, :soul2_safety_continue_string
-              const/4 v3, 0x1
-              return v3
+              const-string v1, "example.com"
+              invoke-virtual {v3, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+              move-result v1
+              if-eqz v1, :soul2_safety_check_subdomain
+              const/4 v2, 0x1
+              return v2
+              :soul2_safety_check_subdomain
+              const-string v1, ".example.com"
+              invoke-virtual {v3, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+              move-result v1
+              if-eqz v1, :soul2_safety_continue_string
+              const/4 v2, 0x1
+              return v2
               :soul2_safety_continue_string
           """
-          method = method.replace('    .locals 4\n', inject, 1)
-          s = s[:m.start()] + method + s[m.end():]
+              method = method.replace(marker, marker + inject, 1)
+              text = text[:m.start()] + method + text[m.end():]
 
-          sig = 'shouldInterceptRequest(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Landroid/webkit/WebResourceResponse;'
-          m = re.search(r'(?ms)^\.method[^\n]*' + re.escape(sig) + r'\n.*?^\.end method$', s)
+          m = find_method(text, request_sig)
           if not m:
-              raise SystemExit('Resource interception method not found.')
+              raise SystemExit("WebResourceRequest navigation method not found.")
           method = m.group(0)
-          needle = '    move-result-object v7\n'
-          pos = method.find(needle)
-          if pos < 0:
-              raise SystemExit('URL result point not found.')
-          injection = """    move-result-object v7
 
-              invoke-static {v7}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-              move-result v1
-              if-eqz v1, :soul2_safety_continue_resource
-              invoke-static {}, Lcom/soul2/safety/SafetyBlocker;->blockedResponse()Landroid/webkit/WebResourceResponse;
+          if "SOUL2_SAFETY_TEST" not in method:
+              needle = """    move-result-object p2
+
+              .line 13
+              invoke-static {v0, p1, p2}, Lcom/mycompany/app/web/WebViewActivity;->w0"""
+              if needle not in method:
+                  raise SystemExit("Expected RC8 URL conversion point not found.")
+
+              inject = """    move-result-object p2
+
+              # SOUL2_SAFETY_TEST
+              invoke-static {p2}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
               move-result-object v1
-              if-eqz v1, :soul2_safety_continue_resource
-              return-object v1
+              invoke-virtual {v1}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+              move-result-object v1
+              if-eqz v1, :soul2_safety_continue_request
+              const-string v2, "example.com"
+              invoke-virtual {v1, v2}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+              move-result v2
+              if-nez v2, :soul2_safety_block_request
+              const-string v2, ".example.com"
+              invoke-virtual {v1, v2}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+              move-result v2
+              if-eqz v2, :soul2_safety_continue_request
 
-              :soul2_safety_continue_resource
-          """
-          method = method[:pos] + injection + method[pos+len(needle):]
-          s = s[:m.start()] + method + s[m.end():]
-          p.write_text(s)
-          print('Patched RC8 navigation and resource interception.')
+              :soul2_safety_block_request
+              const/4 v2, 0x1
+              return v2
+
+              :soul2_safety_continue_request
+              const/4 v2, 0x1
+
+              .line 13
+              invoke-static {v0, p1, p2}, Lcom/mycompany/app/web/WebViewActivity;->w0"""
+              method = method.replace(needle, inject, 1)
+              text = text[:m.start()] + method + text[m.end():]
+
+          path.write_text(text)
+          print("Patched only top-level navigation methods.")
           PY
 
       - name: Build APK
@@ -169,16 +155,18 @@ jobs:
           apk=$(find dist -maxdepth 1 -type f -name '*.apk' \
             ! -name '*-unsigned.apk' \
             ! -name '*-aligned.apk' | head -n 1)
+
           if [ -z "$apk" ]; then
             echo "No signed APK found"
             ls -la dist/
             exit 1
           fi
+
           echo "path=$apk" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: soul2-protected-test
+          name: soul2-navigation-test
           path: soul2/${{ steps.apk.outputs.path }}
           if-no-files-found: error

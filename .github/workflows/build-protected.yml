@@ -26,231 +26,159 @@ jobs:
       - name: Install required tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 zip unzip
+          sudo apt-get install -y python3
 
       - name: Fetch Soul2 RC8
         run: |
           git clone --depth 1 --branch v2.0.0-rc.8 \
             https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
 
-      - name: Add safety blocker
+      - name: Verify RC8 source
         working-directory: soul2
         run: |
-          mkdir -p app/smali/com/soul2/safety
+          test -f 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          grep -q 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z' 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          grep -q 'shouldInterceptRequest(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Landroid/webkit/WebResourceResponse;' 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          echo "Verified RC8 WebViewClient source."
 
-          cat > app/smali/com/soul2/safety/SafetyBlocker.smali <<'EOF'
-.class public final Lcom/soul2/safety/SafetyBlocker;
-.super Ljava/lang/Object;
+      - name: Patch safety test blocker
+        working-directory: soul2
+        run: |
+          mkdir -p app/smali_classes3/com/soul2/safety
 
-.method public static isBlocked(Ljava/lang/String;)Z
-    .locals 3
+          cat > app/smali_classes3/com/soul2/safety/SafetyBlocker.smali <<'EOF'
+          .class public final Lcom/soul2/safety/SafetyBlocker;
+          .super Ljava/lang/Object;
 
-    if-eqz p0, :not_blocked
+          .method public static isBlocked(Ljava/lang/String;)Z
+              .locals 3
+              if-eqz p0, :not_blocked
+              :try_start
+              invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+              move-result-object v0
+              invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+              move-result-object v0
+              if-eqz v0, :not_blocked
+              const-string v1, "example.com"
+              invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+              move-result v2
+              if-nez v2, :blocked
+              const-string v1, ".example.com"
+              invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+              move-result v2
+              if-eqz v2, :not_blocked
+              :blocked
+              const/4 v0, 0x1
+              return v0
+              :not_blocked
+              const/4 v0, 0x0
+              return v0
+              :try_end
+              .catch Ljava/lang/Exception; {:try_start .. :try_end} :catch
+              :catch
+              const/4 v0, 0x0
+              return v0
+          .end method
 
-    invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
-    move-result-object v0
+          .method public static blockedResponse()Landroid/webkit/WebResourceResponse;
+              .locals 3
+              :try_start
+              const-string v0, "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Site blocked</title></head><body><h1>Site blocked</h1><p>This site was blocked by the Soul2 safety test.</p></body></html>"
+              const-string v1, "UTF-8"
+              invoke-virtual {v0, v1}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+              move-result-object v0
+              new-instance v1, Ljava/io/ByteArrayInputStream;
+              invoke-direct {v1, v0}, Ljava/io/ByteArrayInputStream;-><init>([B)V
+              new-instance v0, Landroid/webkit/WebResourceResponse;
+              const-string v2, "text/html"
+              const-string p0, "UTF-8"
+              invoke-direct {v0, v2, p0, v1}, Landroid/webkit/WebResourceResponse;-><init>(Ljava/lang/String;Ljava/lang/String;Ljava/io/InputStream;)V
+              return-object v0
+              :try_end
+              .catch Ljava/lang/Exception; {:try_start .. :try_end} :catch
+              :catch
+              const/4 v0, 0x0
+              return-object v0
+          .end method
+          EOF
 
-    invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
-    move-result-object v0
-
-    if-eqz v0, :not_blocked
-
-    const-string v1, "example.com"
-
-    invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
-    move-result v2
-
-    if-nez v2, :blocked
-
-    const-string v1, ".example.com"
-
-    invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
-    move-result v2
-
-    if-eqz v2, :not_blocked
-
-    :blocked
-    const/4 v0, 0x1
-    return v0
-
-    :not_blocked
-    const/4 v0, 0x0
-    return v0
-.end method
-EOF
-
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
           import re
-          import hashlib
 
-          files = list(Path("app").rglob("WebViewActivity$LocalWebViewClient.smali"))
+          p = Path('app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali')
+          s = p.read_text()
+          helper = 'Lcom/soul2/safety/SafetyBlocker;'
+          if helper in s:
+              raise SystemExit('Safety patch already present.')
 
-          if not files:
-              raise SystemExit(
-                  "ERROR: WebViewActivity$LocalWebViewClient.smali was not found."
-              )
+          sig = 'shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z'
+          m = re.search(r'(?ms)^\.method[^\n]*' + re.escape(sig) + r'\n.*?^\.end method$', s)
+          if not m:
+              raise SystemExit('String navigation method not found.')
+          method = m.group(0)
+          inject = """    .locals 4
 
-          patched = 0
-
-          for path in files:
-              text = path.read_text()
-
-              signatures = [
-                  (
-                      "shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z",
-                      "string"
-                  ),
-                  (
-                      "shouldOverrideUrlLoading(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Z",
-                      "request"
-                  ),
-                  (
-                      "onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V",
-                      "page"
-                  ),
-              ]
-
-              for signature, kind in signatures:
-                  pattern = re.compile(
-                      r"(?ms)^\.method[^\n]*"
-                      + re.escape(signature)
-                      + r"\n.*?^\.end method$"
-                  )
-
-                  match = pattern.search(text)
-
-                  if not match:
-                      continue
-
-                  method = match.group(0)
-
-                  if "com/soul2/safety/SafetyBlocker" in method:
-                      continue
-
-                  header_end = method.find("\n", method.find(".method"))
-
-                  locals_match = re.search(
-                      r"(?m)^(\s*)\.locals\s+(\d+)",
-                      method
-                  )
-
-                  registers_match = re.search(
-                      r"(?m)^(\s*)\.registers\s+(\d+)",
-                      method
-                  )
-
-                  if locals_match:
-                      old = int(locals_match.group(2))
-                      reg = f"v{old}"
-                      method = method.replace(
-                          locals_match.group(0),
-                          f"{locals_match.group(1)}.locals {old + 1}",
-                          1
-                      )
-
-                  elif registers_match:
-                      old = int(registers_match.group(2))
-
-                      param_count = {
-                          "string": 3,
-                          "request": 3,
-                          "page": 4
-                      }[kind]
-
-                      reg_number = old - param_count
-
-                      if reg_number < 0:
-                          raise SystemExit(
-                              f"ERROR: Cannot allocate register in {path}"
-                          )
-
-                      reg = f"v{reg_number}"
-
-                      method = method.replace(
-                          registers_match.group(0),
-                          f"{registers_match.group(1)}.registers {old + 1}",
-                          1
-                      )
-
-                  else:
-                      raise SystemExit(
-                          f"ERROR: No .locals/.registers directive in {path}"
-                      )
-
-                  label = ":soul2_safety_continue_" + hashlib.md5(
-                      (str(path) + signature).encode()
-                  ).hexdigest()[:8]
-
-                  if kind == "string":
-                      injected = f"""
-          invoke-static {{p2}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-          move-result {reg}
-          if-eqz {reg}, {label}
-          const/4 {reg}, 0x1
-          return {reg}
-          {label}
+              invoke-static {p2}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+              move-result v3
+              if-eqz v3, :soul2_safety_continue_string
+              const/4 v3, 0x1
+              return v3
+              :soul2_safety_continue_string
           """
+          method = method.replace('    .locals 4\n', inject, 1)
+          s = s[:m.start()] + method + s[m.end():]
 
-                  elif kind == "request":
-                      injected = f"""
-          invoke-interface {{p2}}, Landroid/webkit/WebResourceRequest;->getUrl()Landroid/net/Uri;
-          move-result-object {reg}
-          if-eqz {reg}, {label}
-          invoke-virtual {{{reg}}}, Landroid/net/Uri;->toString()Ljava/lang/String;
-          move-result-object {reg}
-          invoke-static {{{reg}}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-          move-result {reg}
-          if-eqz {reg}, {label}
-          const/4 {reg}, 0x1
-          return {reg}
-          {label}
+          sig = 'shouldInterceptRequest(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Landroid/webkit/WebResourceResponse;'
+          m = re.search(r'(?ms)^\.method[^\n]*' + re.escape(sig) + r'\n.*?^\.end method$', s)
+          if not m:
+              raise SystemExit('Resource interception method not found.')
+          method = m.group(0)
+          needle = '    move-result-object v7\n'
+          pos = method.find(needle)
+          if pos < 0:
+              raise SystemExit('URL result point not found.')
+          injection = """    move-result-object v7
+
+              invoke-static {v7}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+              move-result v1
+              if-eqz v1, :soul2_safety_continue_resource
+              invoke-static {}, Lcom/soul2/safety/SafetyBlocker;->blockedResponse()Landroid/webkit/WebResourceResponse;
+              move-result-object v1
+              if-eqz v1, :soul2_safety_continue_resource
+              return-object v1
+
+              :soul2_safety_continue_resource
           """
-
-                  else:
-                      injected = f"""
-          invoke-static {{p2}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-          move-result {reg}
-          if-eqz {reg}, {label}
-          invoke-virtual {{p1}}, Landroid/webkit/WebView;->stopLoading()V
-          return-void
-          {label}
-          """
-
-                  directive = (
-                      locals_match.group(0)
-                      if locals_match
-                      else registers_match.group(0)
-                  )
-
-                  method = method.replace(
-                      directive,
-                      directive,
-                      1
-                  )
-
-                  first_code = method.find("\n", method.find(directive))
-                  method = (
-                      method[:first_code + 1]
-                      + injected
-                      + method[first_code + 1:]
-                  )
-
-                  text = text[:match.start()] + method + text[match.end():]
-                  patched += 1
-
-              path.write_text(text)
-
-          if patched == 0:
-              raise SystemExit(
-                  "ERROR: No compatible WebView navigation method was patched."
-              )
-
-          print(f"Safety blocker patched {patched} method(s).")
+          method = method[:pos] + injection + method[pos+len(needle):]
+          s = s[:m.start()] + method + s[m.end():]
+          p.write_text(s)
+          print('Patched RC8 navigation and resource interception.')
           PY
 
       - name: Build APK
         working-directory: soul2
         run: |
           chmod +x scripts/build.sh
-          ./
+          ./scripts/build.sh
+
+      - name: Find APK
+        id: apk
+        working-directory: soul2
+        run: |
+          apk=$(find dist -maxdepth 1 -type f -name '*.apk' \
+            ! -name '*-unsigned.apk' \
+            ! -name '*-aligned.apk' | head -n 1)
+          if [ -z "$apk" ]; then
+            echo "No signed APK found"
+            ls -la dist/
+            exit 1
+          fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: soul2-protected-test
+          path: soul2/${{ steps.apk.outputs.path }}
+          if-no-files-found: error

@@ -1,0 +1,256 @@
+name: Build Protected Soul2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager "build-tools;35.0.0" "platforms;android-35"
+
+      - name: Install required tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 zip unzip
+
+      - name: Fetch Soul2 RC8
+        run: |
+          git clone --depth 1 --branch v2.0.0-rc.8 \
+            https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
+
+      - name: Add safety blocker
+        working-directory: soul2
+        run: |
+          mkdir -p app/smali/com/soul2/safety
+
+          cat > app/smali/com/soul2/safety/SafetyBlocker.smali <<'EOF'
+.class public final Lcom/soul2/safety/SafetyBlocker;
+.super Ljava/lang/Object;
+
+.method public static isBlocked(Ljava/lang/String;)Z
+    .locals 3
+
+    if-eqz p0, :not_blocked
+
+    invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+    move-result-object v0
+
+    invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+    move-result-object v0
+
+    if-eqz v0, :not_blocked
+
+    const-string v1, "example.com"
+
+    invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+    move-result v2
+
+    if-nez v2, :blocked
+
+    const-string v1, ".example.com"
+
+    invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+    move-result v2
+
+    if-eqz v2, :not_blocked
+
+    :blocked
+    const/4 v0, 0x1
+    return v0
+
+    :not_blocked
+    const/4 v0, 0x0
+    return v0
+.end method
+EOF
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import hashlib
+
+          files = list(Path("app").rglob("WebViewActivity$LocalWebViewClient.smali"))
+
+          if not files:
+              raise SystemExit(
+                  "ERROR: WebViewActivity$LocalWebViewClient.smali was not found."
+              )
+
+          patched = 0
+
+          for path in files:
+              text = path.read_text()
+
+              signatures = [
+                  (
+                      "shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z",
+                      "string"
+                  ),
+                  (
+                      "shouldOverrideUrlLoading(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Z",
+                      "request"
+                  ),
+                  (
+                      "onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V",
+                      "page"
+                  ),
+              ]
+
+              for signature, kind in signatures:
+                  pattern = re.compile(
+                      r"(?ms)^\.method[^\n]*"
+                      + re.escape(signature)
+                      + r"\n.*?^\.end method$"
+                  )
+
+                  match = pattern.search(text)
+
+                  if not match:
+                      continue
+
+                  method = match.group(0)
+
+                  if "com/soul2/safety/SafetyBlocker" in method:
+                      continue
+
+                  header_end = method.find("\n", method.find(".method"))
+
+                  locals_match = re.search(
+                      r"(?m)^(\s*)\.locals\s+(\d+)",
+                      method
+                  )
+
+                  registers_match = re.search(
+                      r"(?m)^(\s*)\.registers\s+(\d+)",
+                      method
+                  )
+
+                  if locals_match:
+                      old = int(locals_match.group(2))
+                      reg = f"v{old}"
+                      method = method.replace(
+                          locals_match.group(0),
+                          f"{locals_match.group(1)}.locals {old + 1}",
+                          1
+                      )
+
+                  elif registers_match:
+                      old = int(registers_match.group(2))
+
+                      param_count = {
+                          "string": 3,
+                          "request": 3,
+                          "page": 4
+                      }[kind]
+
+                      reg_number = old - param_count
+
+                      if reg_number < 0:
+                          raise SystemExit(
+                              f"ERROR: Cannot allocate register in {path}"
+                          )
+
+                      reg = f"v{reg_number}"
+
+                      method = method.replace(
+                          registers_match.group(0),
+                          f"{registers_match.group(1)}.registers {old + 1}",
+                          1
+                      )
+
+                  else:
+                      raise SystemExit(
+                          f"ERROR: No .locals/.registers directive in {path}"
+                      )
+
+                  label = ":soul2_safety_continue_" + hashlib.md5(
+                      (str(path) + signature).encode()
+                  ).hexdigest()[:8]
+
+                  if kind == "string":
+                      injected = f"""
+          invoke-static {{p2}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+          move-result {reg}
+          if-eqz {reg}, {label}
+          const/4 {reg}, 0x1
+          return {reg}
+          {label}
+          """
+
+                  elif kind == "request":
+                      injected = f"""
+          invoke-interface {{p2}}, Landroid/webkit/WebResourceRequest;->getUrl()Landroid/net/Uri;
+          move-result-object {reg}
+          if-eqz {reg}, {label}
+          invoke-virtual {{{reg}}}, Landroid/net/Uri;->toString()Ljava/lang/String;
+          move-result-object {reg}
+          invoke-static {{{reg}}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+          move-result {reg}
+          if-eqz {reg}, {label}
+          const/4 {reg}, 0x1
+          return {reg}
+          {label}
+          """
+
+                  else:
+                      injected = f"""
+          invoke-static {{p2}}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+          move-result {reg}
+          if-eqz {reg}, {label}
+          invoke-virtual {{p1}}, Landroid/webkit/WebView;->stopLoading()V
+          return-void
+          {label}
+          """
+
+                  directive = (
+                      locals_match.group(0)
+                      if locals_match
+                      else registers_match.group(0)
+                  )
+
+                  method = method.replace(
+                      directive,
+                      directive,
+                      1
+                  )
+
+                  first_code = method.find("\n", method.find(directive))
+                  method = (
+                      method[:first_code + 1]
+                      + injected
+                      + method[first_code + 1:]
+                  )
+
+                  text = text[:match.start()] + method + text[match.end():]
+                  patched += 1
+
+              path.write_text(text)
+
+          if patched == 0:
+              raise SystemExit(
+                  "ERROR: No compatible WebView navigation method was patched."
+              )
+
+          print(f"Safety blocker patched {patched} method(s).")
+          PY
+
+      - name: Build APK
+        working-directory: soul2
+        run: |
+          chmod +x scripts/build.sh
+          ./

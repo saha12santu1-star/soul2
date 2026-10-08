@@ -33,128 +33,124 @@ jobs:
           git clone --depth 1 --branch v2.0.0-rc.8 \
             https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
 
-      - name: Patch verified RC8 navigation hook
+      - name: Verify RC8 source
         working-directory: soul2
         run: |
-          python3 <<'PY'
+          test -f 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          grep -q 'onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V' \
+            'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
+          echo "Verified RC8 onPageStarted hook."
+
+      - name: Patch navigation safety test
+        working-directory: soul2
+        run: |
+          mkdir -p app/smali_classes3/com/soul2/safety
+
+          cat > app/smali_classes3/com/soul2/safety/SafetyBlocker.smali <<'EOF'
+          .class public final Lcom/soul2/safety/SafetyBlocker;
+          .super Ljava/lang/Object;
+          
+          .method public static isBlocked(Ljava/lang/String;)Z
+              .locals 3
+          
+              if-eqz p0, :not_blocked
+          
+              invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+              move-result-object v0
+          
+              invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+              move-result-object v0
+          
+              if-eqz v0, :not_blocked
+          
+              const-string v1, "example.com"
+              invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
+              move-result v2
+              if-nez v2, :blocked
+          
+              const-string v1, ".example.com"
+              invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
+              move-result v2
+              if-eqz v2, :not_blocked
+          
+              :blocked
+              const/4 v0, 0x1
+              return v0
+          
+              :not_blocked
+              const/4 v0, 0x0
+              return v0
+          .end method
+          EOF
+
+          cat > /tmp/patch.py <<'PY'
           from pathlib import Path
           import re
-
-          path = Path(
+          
+          p = Path(
               "app/smali_classes3/com/mycompany/app/web/"
               "WebViewActivity$LocalWebViewClient.smali"
           )
-
-          if not path.exists():
-              raise SystemExit("RC8 WebViewClient file was not found.")
-
-          text = path.read_text()
-
+          
+          s = p.read_text()
+          
           signature = (
               "onPageStarted("
               "Landroid/webkit/WebView;"
               "Ljava/lang/String;"
               "Landroid/graphics/Bitmap;)V"
           )
-
+          
           pattern = re.compile(
-              r"(?ms)^\.method[^\n]*" +
-              re.escape(signature) +
-              r"\n.*?^\.end method$"
+              r"(?ms)^\.method[^\n]*"
+              + re.escape(signature)
+              + r"\n.*?^\.end method$"
           )
-
-          match = pattern.search(text)
-
-          if not match:
-              raise SystemExit("RC8 onPageStarted method was not found.")
-
-          method = match.group(0)
-
+          
+          m = pattern.search(s)
+          if not m:
+              raise SystemExit("ERROR: RC8 onPageStarted method not found.")
+          
+          method = m.group(0)
+          
           if "Lcom/soul2/safety/SafetyBlocker;" in method:
-              raise SystemExit("Safety patch already exists.")
-
-          locals_match = re.search(
-              r"(?m)^(\s*)\.locals\s+(\d+)",
-              method
-          )
-
+              raise SystemExit("ERROR: Safety patch already present.")
+          
+          locals_match = re.search(r"(?m)^(\s*)\.locals\s+(\d+)$", method)
           if not locals_match:
-              raise SystemExit("Could not find .locals in onPageStarted.")
-
+              raise SystemExit("ERROR: onPageStarted .locals directive not found.")
+          
           old_locals = int(locals_match.group(2))
-          reg = f"v{old_locals}"
-
+          if old_locals != 3:
+              raise SystemExit(
+                  f"ERROR: Expected RC8 onPageStarted to use 3 locals; found {old_locals}."
+              )
+          
           method = method.replace(
               locals_match.group(0),
-              f"{locals_match.group(1)}.locals {old_locals + 1}",
+              f"{locals_match.group(1)}.locals 4",
               1
           )
-
-          helper = """
-          invoke-static {p2}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-          move-result %s
-          if-eqz %s, :soul2_safety_continue
+          
+          injection = """invoke-static {p2}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
+          move-result v3
+          if-eqz v3, :soul2_safety_continue
           invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V
           return-void
-
           :soul2_safety_continue
-          """ % (reg, reg)
-
-          directive_end = method.find("\n", method.find(locals_match.group(0)))
-          method = (
-              method[:directive_end + 1]
-              + helper
-              + method[directive_end + 1:]
-          )
-
-          text = text[:match.start()] + method + text[match.end():]
-          path.write_text(text)
-
-          print("Verified RC8 onPageStarted() patched successfully.")
+          
+          """
+          
+          insert_at = method.find("\n", method.find(".locals 4")) + 1
+          method = method[:insert_at] + injection + method[insert_at:]
+          
+          s = s[:m.start()] + method + s[m.end():]
+          p.write_text(s)
+          
+          print("Patched RC8 onPageStarted safely.")
           PY
 
-          mkdir -p app/smali/com/soul2/safety
-
-          cat > app/smali/com/soul2/safety/SafetyBlocker.smali <<'EOF'
-          .class public final Lcom/soul2/safety/SafetyBlocker;
-          .super Ljava/lang/Object;
-
-          .method public static isBlocked(Ljava/lang/String;)Z
-              .locals 3
-
-              if-eqz p0, :not_blocked
-
-              invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
-              move-result-object v0
-
-              invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
-              move-result-object v0
-
-              if-eqz v0, :not_blocked
-
-              const-string v1, "example.com"
-
-              invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
-              move-result v2
-
-              if-nez v2, :blocked
-
-              const-string v1, ".example.com"
-
-              invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
-              move-result v2
-
-              if-eqz v2, :not_blocked
-
-              :blocked
-              const/4 v0, 0x1
-              return v0
-
-              :not_blocked
-              const/4 v0, 0x0
-              return v0
-          .end method
-          EOF
+          python3 /tmp/patch.py
 
       - name: Build APK
         working-directory: soul2

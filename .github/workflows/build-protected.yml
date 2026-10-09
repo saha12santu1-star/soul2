@@ -9,7 +9,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -33,7 +32,7 @@ jobs:
           git clone --depth 1 --branch v2.0.0-rc.8 \
             https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
 
-      - name: Patch verified onPageStarted entry
+      - name: Patch top-level navigation methods
         working-directory: soul2
         run: |
           cat > /tmp/patch_soul2.py <<'PYCODE'
@@ -42,49 +41,69 @@ jobs:
           path = Path('app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali')
           if not path.is_file():
               raise SystemExit(f'RC8 source file not found: {path}')
-
           text = path.read_text()
-          signature = '.method public final onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V'
-          if text.count(signature) != 1:
-              raise SystemExit('Expected exactly one RC8 onPageStarted method; refusing to patch.')
 
-          start = text.index(signature)
-          end = text.index('.end method', start)
-          method = text[start:end]
-          if 'SOUL2_EXAMPLE_DOMAIN_TEST' in method:
-              raise SystemExit('Patch marker already exists; refusing to patch twice.')
+          def patch(signature, marker, old_locals, new_locals, code_lines):
+              global text
+              if text.count(signature) != 1:
+                  raise SystemExit(f'Expected exactly one method: {signature}')
+              start = text.index(signature)
+              end = text.index('.end method', start) + len('.end method')
+              method = text[start:end]
+              if marker in method:
+                  raise SystemExit(f'Patch already present: {marker}')
+              old = f'    .locals {old_locals}\n'
+              if method.count(old) != 1:
+                  raise SystemExit(f'Unexpected local count for {signature}')
+              method = method.replace(old, f'    .locals {new_locals}\n', 1)
+              directive = f'    .locals {new_locals}\n'
+              code = '\n'.join(code_lines) + '\n'
+              method = method.replace(directive, directive + code, 1)
+              text = text[:start] + method + text[end:]
 
-          old_locals = '    .locals 3'
-          if method.count(old_locals) != 1:
-              raise SystemExit('Expected .locals 3 in onPageStarted; refusing to guess register allocation.')
+          patch(
+              '.method public final shouldOverrideUrlLoading(Landroid/webkit/WebView;Landroid/webkit/WebResourceRequest;)Z',
+              'SOUL2_EXAMPLE_DOMAIN_TEST_REQUEST', 3, 5,
+              [
+                  '    # SOUL2_EXAMPLE_DOMAIN_TEST_REQUEST',
+                  '    if-eqz p2, :soul2_test_allow_request',
+                  '    invoke-interface {p2}, Landroid/webkit/WebResourceRequest;->getUrl()Landroid/net/Uri;',
+                  '    move-result-object v3',
+                  '    if-eqz v3, :soul2_test_allow_request',
+                  '    invoke-virtual {v3}, Landroid/net/Uri;->toString()Ljava/lang/String;',
+                  '    move-result-object v3',
+                  '    const-string v4, "example.com"',
+                  '    invoke-virtual {v3, v4}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z',
+                  '    move-result v3',
+                  '    if-eqz v3, :soul2_test_allow_request',
+                  '    const/4 v3, 0x1',
+                  '    return v3',
+                  '    :soul2_test_allow_request'
+              ]
+          )
 
-          method = method.replace(old_locals, '    .locals 4', 1)
-          insertion = [
-              '    # SOUL2_EXAMPLE_DOMAIN_TEST',
-              '    if-eqz p2, :soul2_test_allow_page',
-              '    const-string v3, \"example.com\"',
-              '    invoke-virtual {p2, v3}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z',
-              '    move-result v3',
-              '    if-eqz v3, :soul2_test_allow_page',
-              '    invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V',
-              '    return-void',
-              '    :soul2_test_allow_page',
-              ''
-          ]
-          directive = '    .locals 4\n'
-          if method.count(directive) != 1:
-              raise SystemExit('Could not identify the updated locals directive.')
-          method = method.replace(directive, directive + '\n'.join(insertion) + '\n', 1)
-          text = text[:start] + method + text[end:]
+          patch(
+              '.method public final shouldOverrideUrlLoading(Landroid/webkit/WebView;Ljava/lang/String;)Z',
+              'SOUL2_EXAMPLE_DOMAIN_TEST_STRING', 4, 5,
+              [
+                  '    # SOUL2_EXAMPLE_DOMAIN_TEST_STRING',
+                  '    if-eqz p2, :soul2_test_allow_string',
+                  '    const-string v4, "example.com"',
+                  '    invoke-virtual {p2, v4}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z',
+                  '    move-result v4',
+                  '    if-eqz v4, :soul2_test_allow_string',
+                  '    const/4 v4, 0x1',
+                  '    return v4',
+                  '    :soul2_test_allow_string'
+              ]
+          )
+
           path.write_text(text)
-
-          verify = path.read_text()
-          s = verify.index(signature)
-          e = verify.index('.end method', s)
-          patched = verify[s:e]
-          assert patched.index('.locals 4') < patched.index('SOUL2_EXAMPLE_DOMAIN_TEST')
-          assert 'invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V' in patched
-          print('Source patch checks passed. Test target: example.com')
+          check = path.read_text()
+          for marker in ('SOUL2_EXAMPLE_DOMAIN_TEST_REQUEST', 'SOUL2_EXAMPLE_DOMAIN_TEST_STRING'):
+              if check.count(marker) != 1:
+                  raise SystemExit(f'Patch verification failed: {marker}')
+          print('Patched and checked both RC8 navigation methods.')
           PYCODE
           python3 /tmp/patch_soul2.py
 

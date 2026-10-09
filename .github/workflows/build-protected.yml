@@ -1,7 +1,10 @@
-name: Build Protected Soul2
+name: Build Soul2 Navigation Test
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -20,137 +23,70 @@ jobs:
           packages: platform-tools
 
       - name: Install Android build tools
-        run: |
-          sdkmanager "build-tools;35.0.0" "platforms;android-35"
+        run: sdkmanager "build-tools;35.0.0" "platforms;android-35"
 
       - name: Install required tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3
+        run: sudo apt-get update && sudo apt-get install -y python3 curl zip unzip
 
       - name: Fetch Soul2 RC8
         run: |
           git clone --depth 1 --branch v2.0.0-rc.8 \
             https://git.kaki87.net/VibedByKaKi/soul-browser.git soul2
 
-      - name: Verify RC8 source
+      - name: Patch verified onPageStarted entry
         working-directory: soul2
         run: |
-          test -f 'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
-          grep -q 'onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V' \
-            'app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali'
-          echo "Verified RC8 onPageStarted hook."
-
-      - name: Patch navigation safety test
-        working-directory: soul2
-        run: |
-          mkdir -p app/smali_classes3/com/soul2/safety
-
-          cat > app/smali_classes3/com/soul2/safety/SafetyBlocker.smali <<'EOF'
-          .class public final Lcom/soul2/safety/SafetyBlocker;
-          .super Ljava/lang/Object;
-          
-          .method public static isBlocked(Ljava/lang/String;)Z
-              .locals 3
-          
-              if-eqz p0, :not_blocked
-          
-              invoke-static {p0}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
-              move-result-object v0
-          
-              invoke-virtual {v0}, Landroid/net/Uri;->getHost()Ljava/lang/String;
-              move-result-object v0
-          
-              if-eqz v0, :not_blocked
-          
-              const-string v1, "example.com"
-              invoke-virtual {v0, v1}, Ljava/lang/String;->equalsIgnoreCase(Ljava/lang/String;)Z
-              move-result v2
-              if-nez v2, :blocked
-          
-              const-string v1, ".example.com"
-              invoke-virtual {v0, v1}, Ljava/lang/String;->endsWith(Ljava/lang/String;)Z
-              move-result v2
-              if-eqz v2, :not_blocked
-          
-              :blocked
-              const/4 v0, 0x1
-              return v0
-          
-              :not_blocked
-              const/4 v0, 0x0
-              return v0
-          .end method
-          EOF
-
-          cat > /tmp/patch.py <<'PY'
+          cat > /tmp/patch_soul2.py <<'PYCODE'
           from pathlib import Path
-          import re
-          
-          p = Path(
-              "app/smali_classes3/com/mycompany/app/web/"
-              "WebViewActivity$LocalWebViewClient.smali"
-          )
-          
-          s = p.read_text()
-          
-          signature = (
-              "onPageStarted("
-              "Landroid/webkit/WebView;"
-              "Ljava/lang/String;"
-              "Landroid/graphics/Bitmap;)V"
-          )
-          
-          pattern = re.compile(
-              r"(?ms)^\.method[^\n]*"
-              + re.escape(signature)
-              + r"\n.*?^\.end method$"
-          )
-          
-          m = pattern.search(s)
-          if not m:
-              raise SystemExit("ERROR: RC8 onPageStarted method not found.")
-          
-          method = m.group(0)
-          
-          if "Lcom/soul2/safety/SafetyBlocker;" in method:
-              raise SystemExit("ERROR: Safety patch already present.")
-          
-          locals_match = re.search(r"(?m)^(\s*)\.locals\s+(\d+)$", method)
-          if not locals_match:
-              raise SystemExit("ERROR: onPageStarted .locals directive not found.")
-          
-          old_locals = int(locals_match.group(2))
-          if old_locals != 3:
-              raise SystemExit(
-                  f"ERROR: Expected RC8 onPageStarted to use 3 locals; found {old_locals}."
-              )
-          
-          method = method.replace(
-              locals_match.group(0),
-              f"{locals_match.group(1)}.locals 4",
-              1
-          )
-          
-          injection = """invoke-static {p2}, Lcom/soul2/safety/SafetyBlocker;->isBlocked(Ljava/lang/String;)Z
-          move-result v3
-          if-eqz v3, :soul2_safety_continue
-          invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V
-          return-void
-          :soul2_safety_continue
-          
-          """
-          
-          insert_at = method.find("\n", method.find(".locals 4")) + 1
-          method = method[:insert_at] + injection + method[insert_at:]
-          
-          s = s[:m.start()] + method + s[m.end():]
-          p.write_text(s)
-          
-          print("Patched RC8 onPageStarted safely.")
-          PY
 
-          python3 /tmp/patch.py
+          path = Path('app/smali_classes3/com/mycompany/app/web/WebViewActivity$LocalWebViewClient.smali')
+          if not path.is_file():
+              raise SystemExit(f'RC8 source file not found: {path}')
+
+          text = path.read_text()
+          signature = '.method public final onPageStarted(Landroid/webkit/WebView;Ljava/lang/String;Landroid/graphics/Bitmap;)V'
+          if text.count(signature) != 1:
+              raise SystemExit('Expected exactly one RC8 onPageStarted method; refusing to patch.')
+
+          start = text.index(signature)
+          end = text.index('.end method', start)
+          method = text[start:end]
+          if 'SOUL2_EXAMPLE_DOMAIN_TEST' in method:
+              raise SystemExit('Patch marker already exists; refusing to patch twice.')
+
+          old_locals = '    .locals 3'
+          if method.count(old_locals) != 1:
+              raise SystemExit('Expected .locals 3 in onPageStarted; refusing to guess register allocation.')
+
+          method = method.replace(old_locals, '    .locals 4', 1)
+          insertion = [
+              '    # SOUL2_EXAMPLE_DOMAIN_TEST',
+              '    if-eqz p2, :soul2_test_allow_page',
+              '    const-string v3, \"example.com\"',
+              '    invoke-virtual {p2, v3}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z',
+              '    move-result v3',
+              '    if-eqz v3, :soul2_test_allow_page',
+              '    invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V',
+              '    return-void',
+              '    :soul2_test_allow_page',
+              ''
+          ]
+          directive = '    .locals 4\n'
+          if method.count(directive) != 1:
+              raise SystemExit('Could not identify the updated locals directive.')
+          method = method.replace(directive, directive + '\n'.join(insertion) + '\n', 1)
+          text = text[:start] + method + text[end:]
+          path.write_text(text)
+
+          verify = path.read_text()
+          s = verify.index(signature)
+          e = verify.index('.end method', s)
+          patched = verify[s:e]
+          assert patched.index('.locals 4') < patched.index('SOUL2_EXAMPLE_DOMAIN_TEST')
+          assert 'invoke-virtual {p1}, Landroid/webkit/WebView;->stopLoading()V' in patched
+          print('Source patch checks passed. Test target: example.com')
+          PYCODE
+          python3 /tmp/patch_soul2.py
 
       - name: Build APK
         working-directory: soul2
@@ -163,20 +99,17 @@ jobs:
         working-directory: soul2
         run: |
           apk=$(find dist -maxdepth 1 -type f -name '*.apk' \
-            ! -name '*-unsigned.apk' \
-            ! -name '*-aligned.apk' | head -n 1)
-
+            ! -name '*-unsigned.apk' ! -name '*-aligned.apk' | head -n 1)
           if [ -z "$apk" ]; then
             echo "No signed APK found"
             ls -la dist/
             exit 1
           fi
-
           echo "path=$apk" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK
+      - name: Upload test APK
         uses: actions/upload-artifact@v4
         with:
-          name: soul2-protected-onpagestart-test
+          name: soul2-navigation-test
           path: soul2/${{ steps.apk.outputs.path }}
           if-no-files-found: error
